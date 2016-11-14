@@ -1,0 +1,1475 @@
+########################################################################################################################################
+############################## Analysing Authorship of PM Nawaz Sharif's Speeches using R ##############################################
+########################################################################################################################################
+
+
+
+
+################ Purpose: This script cleans and analyses the speech texts extracted previously
+################ Author: Ali Arsalan Kazmi
+
+
+
+
+
+
+
+
+### Stage 1: Load packages and directory paths
+
+pkgs <- c("purrr", "data.table", "dplyr", "tidyr", "readr", "lubridate", "stylo", "tsne", "ggplot2", "igraph", "intergraph", "ggnetwork", "stringr",
+	  "ggrepel", "ggiraph", "ggthemes", "viridis", "scales", "grid", "gtable", "FactoMineR", "tidytext", "wordcloud", "extrafont", "textcat",
+	  "Hmisc", "openNLP", "quanteda", "ggfortify", "gplots", "fpc", "dendsort", "seriation")
+
+allLoaded <- sapply(pkgs, require, character.only = TRUE)
+
+
+
+basePath <- "C:\\Users\\kazami\\Desktop\\Aimia\\Campaign Analytics + BI + Self-learning\\Personal Projects\\PM Nawaz Speech Authorship"
+dataPath <- paste(basePath, "Data", sep = "/")
+setwd(dataPath)
+
+
+
+
+
+
+
+### Stage 2: Load data
+
+allFilesPath <- list.files(pattern = "txt$", full.names = TRUE)
+speechList <- map(.x = allFilesPath, .f = read_file)
+allFilesName <- list.files(pattern = "txt$")
+pronounList <- stylo.pronouns("English") %>% gsub("^", "\\\\b", .) %>% gsub("$", "\\\\b", .) %>% paste0(., collapse = "|")
+
+
+
+
+
+
+
+
+### Stage 3: Tidy data and identify language of speech (currently we only want to focus on English speeches)
+
+speechListClean <- speechList %>%
+			map(~ gsub("^\\s+|\\s+$", "", .x)) %>%						# Removing leading & trailing whitespace
+			map(~ gsub("\\t|\\r|\\n", " ", .x)) %>%						# Removing tab/return/newline spaces
+			map(~ gsub("Mr[.]*\\s*President", "", .x, ignore.case = TRUE)) %>%		# Removing unrequired addresses
+			map(~ gsub("Ladies and Gentlemen", "", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("Distinguished Guests*", "", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("Excellency|Excellencies", "", .x, ignore.case = TRUE)) %>%	
+			map(~ gsub("Quaid\\s*[eE]\\s*Azam", "quaideazam", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("Mr\\.", "Mr", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("I* Thank you", "", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("\\.", " fullstop ", .x)) %>%					# Textualising a ., to later convert it back
+			map(~ gsub(",", " comma ", .x)) %>%						# Textualising a , to later convert it back
+			map(~ gsub(";", " semicolon ", .x)) %>%						# Textualising a ;
+			map(~ gsub(":", " colon ", .x)) %>%						# Textualising a :
+			map(~ gsub("[^[:alnum:]+]", " ", .x)) %>% 					# Remove characters apart from alpha-numeric
+			map(~ gsub("[[:digit:]]+", "", .x)) %>%						# Remove digits
+			map(~ gsub(pronounList, "", .x, ignore.case = TRUE)) %>%			# Should probably remove some/all pronouns
+			map(~ gsub(" fullstop ", " \\. ", .x)) %>%					# Adding the . back in
+			map(~ gsub(" comma ", " , ", .x)) %>%						# Adding the , back in
+			map(~ gsub(" semicolon ", " ; ", .x)) %>%					# Adding the ; back in
+			map(~ gsub(" colon ", " : ", .x)) %>%						# Adding the : back in
+			map(~ gsub("\\s+", " ", .x)) %>%						# Remove extra whitespace
+			map(~ gsub("^\\s+|\\s+$", "", .x)) %>%					# Removing leading & trailing whitespace again
+			map(~ tolower(.x))							# Making text lowercase
+
+names(speechListClean) <- allFilesName
+			
+speechLang <- speechListClean %>%
+			map(~ substr(.x, start = 1, stop = 300)) %>%			# Only using first 300 characters
+			map(~ textcat(.x)) %>%						# Identifying the language of each speech
+			map_chr(1)							# Extracting the first object from each item of list
+
+
+speechListCleanEn <- speechListClean[speechLang == "english"]
+
+# The following speeches are actually reports from the PM's office
+notSpeeches <- c("20150106-21st Constitutional Amendment amendment in army act to prove vital in establishing peace harmony.txt", 
+		 "20150108-PMAddress to Pakistani community in Bahrain.txt")
+speechListCleanEn <- speechListCleanEn[!names(speechListCleanEn) %in% notSpeeches]
+
+
+
+
+
+
+
+
+
+### Stage 4: Basic reporting - total word counts, sentence counts, character counts
+
+
+g1 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(`Unique Words` = length(unique(word)), `Total Words` = length(word)) %>%
+		mutate(prcntWords = `Unique Words`/`Total Words`) %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech, ordered = TRUE), y = prcntWords)) +
+		geom_bar(stat = "identity", fill = "#A8CD1B") +
+		scale_y_continuous(label = percent, breaks = pretty_breaks(7)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("What Percentage of Words are Unique in the Prime Minister's Speeches?") +
+		geom_hline(yintercept = .4, linetype = "dashed", colour = "white") +
+		theme_bw() +
+		theme(text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g1.png", sep = "/"), plot = g1, height = 10, width = 15, units='in', dpi=600)
+
+
+g2 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(uniqueWords = length(unique(word)), totalWords = length(word)) %>%
+		ungroup() %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = uniqueWords, y = totalWords)) +
+		geom_point(colour = "#A8CD1B", size = 3) +
+		geom_smooth(colour = "#005A31") +
+		scale_y_continuous(label = comma) +
+		scale_x_continuous(label = comma) +
+		xlab("Number of Unique Words") + ylab("Number of Total Words") +
+		ggtitle("Does the Number of Unique Words in Speeches increase with an increase in Speech length?") +
+		theme_bw() +
+		theme(text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g2.png", sep = "/"), plot = g2, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g3 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(`Unique Words` = length(unique(word)), `Total Words` = length(word)) %>%
+		ungroup() %>%
+		gather(variable, value, -dateOfSpeech) %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech, ordered = TRUE), y = value, fill = variable)) +
+		geom_bar(stat = "identity", position = "dodge") +
+		scale_fill_manual(values = c("#005A31", "#A8CD1B"), name = "") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("How many Words does the Prime Minister use in his Speeches?\n") +
+		theme_bw() +
+		theme(legend.position = c(0.09,1.027), legend.direction = "horizontal",
+			legend.text = element_text(size = rel(1.1)), 
+			text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g3.png", sep = "/"), plot = g3, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g4 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = sentence, input = speech, token = "regex", pattern = "\\.") %>%
+		group_by(dateOfSpeech) %>%
+		summarise(totalSentences = length(sentence)) %>%
+		ggplot(aes(x = factor(dateOfSpeech), y = totalSentences)) +
+		geom_bar(stat = "identity", fill = "#A8CD1B") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("How many Sentences does the Prime Minister has in his Speeches?") +
+		theme_bw() +
+		theme(text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g4.png", sep = "/"), plot = g4, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g5 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = sentence, input = speech, token = "regex", pattern = "\\.") %>%
+		mutate(totalCharSentence = str_count(sentence, "\\S+")) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(`Median Words in a Sentence` = median(totalCharSentence), `Mean Words in a Sentence` = mean(totalCharSentence)) %>%
+		gather(variable, value, -dateOfSpeech) %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech), y = value, group = variable, colour = variable)) +
+		geom_line() +
+		scale_colour_manual(values = c("#005A31", "#A8CD1B"), name = "") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("How many Words comprise a Sentence in the Prime Minister's Speeches?\n") +
+		theme_bw() +
+		theme(legend.position = c(0.165,1.027), legend.direction = "horizontal",
+			legend.text = element_text(size = rel(1.1)), 
+			text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g5.png", sep = "/"), plot = g5, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g6 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		group_by(word) %>%
+		summarise(wordFreq = length(word)) %>%
+		ungroup() %>% 
+		arrange(-wordFreq) %>%
+		mutate(wordRank = 1:length(word)) %>%
+		ggplot(aes(x = wordRank, y = wordFreq)) +
+		geom_point(colour = "#A8CD1B") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		scale_x_continuous(label = comma, breaks = pretty_breaks(10)) +
+		xlab("Rank of Each Word") + ylab("Frequency of Each Word") +
+		ggtitle("Rank Frequency Plot for the Collection of the Prime Minister's Speeches") +
+		theme_bw() +
+		theme(text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g6.png", sep = "/"), plot = g6, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g7 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = sentence, input = speech, token = "regex", pattern = "\\.") %>%
+		mutate(commasInSentence = nchar(gsub("[^,]", "", sentence))) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(commasPerSentence = mean(commasInSentence)) %>%
+		ungroup() %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech), y = commasPerSentence)) +
+		geom_bar(stat = "identity", fill = "#A8CD1B") +
+		geom_hline(yintercept = 1, linetype = "dashed", colour = "white") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("How many commas does the Prime Miniser use in his Sentences on Average?") +
+		theme_bw() +
+		theme(legend.position = c(0.2,1.027), legend.direction = "horizontal",
+			legend.text = element_text(size = rel(1.1)), 
+			text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g7.png", sep = "/"), plot = g7, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g8 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = sentence, input = speech, token = "regex", pattern = "\\.") %>%
+		mutate(colonsInSentence = nchar(gsub("[^:;]", "", sentence))) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(colonsPerSentence = mean(colonsInSentence)) %>%
+		ungroup() %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech), y = colonsPerSentence)) +
+		geom_bar(stat = "identity", fill = "#A8CD1B") +
+		#geom_hline(yintercept = 1, linetype = "dashed", colour = "white") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("How many colons/semi-colons does the Prime Miniser use in his Sentences on Average?") +
+		theme_bw() +
+		theme(legend.position = c(0.2,1.027), legend.direction = "horizontal",
+			legend.text = element_text(size = rel(1.1)), 
+			text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g8.png", sep = "/"), plot = g8, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g9 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = sentence, input = speech, token = "regex", pattern = "\\.") %>%
+		mutate(colonsInSentence = nchar(gsub("[^:;]", "", sentence))) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(colonsInSpeech = sum(colonsInSentence)) %>%
+		ungroup() %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech), y = colonsInSpeech)) +
+		geom_bar(stat = "identity", fill = "#A8CD1B") +
+		#geom_hline(yintercept = 1, linetype = "dashed", colour = "white") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("How many colons/semi-colons does the Prime Miniser use in his Speeches?") +
+		theme_bw() +
+		theme(legend.position = c(0.2,1.027), legend.direction = "horizontal",
+			legend.text = element_text(size = rel(1.1)), 
+			text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g9.png", sep = "/"), plot = g9, height = 10, width = 15, units='in', dpi=600)
+
+
+
+g10 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		mutate(wordLength = nchar(word)) %>%
+		group_by(dateOfSpeech) %>%
+		summarise(`Median Word Length` = median(wordLength), `Mean Word Length` = mean(wordLength)) %>%
+		gather(variable, value, -dateOfSpeech) %>%
+		arrange(dateOfSpeech) %>%
+		ggplot(aes(x = factor(dateOfSpeech), y = value, group = variable, colour = variable)) +
+		geom_line() +
+		scale_colour_manual(values = c("#005A31", "#A8CD1B"), name = "") +
+		scale_y_continuous(label = comma, breaks = pretty_breaks(5)) +
+		xlab("Speech Date") + ylab("") +
+		ggtitle("What is the Word Length on Average in the Prime Minister's Speeches?\n") +
+		theme_bw() +
+		theme(legend.position = c(0.165,1.027), legend.direction = "horizontal",
+			legend.text = element_text(size = rel(1.1)), 
+			text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1)),
+			axis.text.x = element_text(angle = 90, hjust = 0, size = rel(1)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g10.png", sep = "/"), plot = g10, height = 10, width = 15, units='in', dpi=600)
+
+
+rm(g1, g2, g3, g4, g5, g6, g7, g8, g9, g10)
+gc(T,T)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Stage 5: Preparing data sets for analyses
+
+
+
+# Sentence Level Measures: 
+	# 1. Sentence length
+		# a. Avg no. of words in a sentence
+		# b. Avg no. of characters in a sentence
+	# 2. Punctuation
+		# a. Avg no. of commas
+		# b. Avg no. of semi colons and colons
+	# 3. Type-Token ratio (different ones mentioned here: http://coltekin.net/cagri/courses/lingdiff/slides/grieve-referat.pdf)
+# Speech Level Measures
+	# 1. Avg length of word
+	# 2. No. of Punctuation marks by Characters in Speech
+
+
+slm_df1 <- 
+data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = sentence, input = speech, token = "regex", pattern = "\\.") %>%
+		filter(nchar(sentence) > 1) %>% 						# Some sentences consist only of a space
+		mutate(totalWordSentence = str_count(sentence, "\\S+"), 
+		       totalCharSentence = nchar(gsub("\\s+", "", sentence)),
+		       totalSColonSentence = nchar(gsub("[^:;]", "", sentence)),
+		       totalCommaSentence = nchar(gsub("[^,]", "", sentence)),
+		       totalPunctSentence = nchar(gsub("[^,:;]", "", sentence))) %>%  		# fullstops not included  
+		group_by(sentence) %>%
+		mutate(ttRatio = length(unique(unlist(str_extract_all(sentence, "\\S+"))))/
+				 length(unlist(str_extract_all(sentence, "\\S+")))) %>%
+		group_by(name, dateOfSpeech) %>%
+		summarise(avgWordsSentence = mean(totalWordSentence, na.rm = TRUE),
+			  avgCharSentence = mean(totalCharSentence, na.rm = TRUE), 
+			  avgCommaSentence = mean(totalCommaSentence, na.rm = TRUE),
+			  avgSColonSentence = mean(totalSColonSentence, na.rm = TRUE),
+			  punctPerCharSpeech = sum(totalPunctSentence)/sum(totalCharSentence),
+			  avgLengthWordSpeech = sum(totalCharSentence)/sum(totalWordSentence),
+			  avgTTRatio = mean(ttRatio, na.rm = TRUE)) %>%
+		ungroup() 
+		
+
+ggplot(data = slm_df1, aes(x = punctPerCharSpeech, y= avgLengthWordSpeech)) + 
+	geom_point(colour = "#A8CD1B", size = 2) +
+	geom_smooth(colour = "#005A31") +
+	scale_y_continuous(label = comma) +
+	scale_x_continuous(label = comma) +
+	ylab("Averange Length of a Word in a Speech") + xlab("Punctuation Per Character") +
+	ggtitle("Comparing how the Length of Words Changes with the Rate of Punctuation") +
+	theme_bw() +
+	theme(text = element_text(family = "Calibri", colour = "grey30"), 
+		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+		panel.grid = element_blank(),
+		panel.border = element_blank(),
+		axis.text.y = element_text(size = rel(1)),
+		axis.text.x = element_text(size = rel(1)))
+
+ggplot(data = slm_df1, aes(x = punctPerCharSpeech, y= avgCharSentence)) +
+	geom_point(colour = "#A8CD1B", size = 2) +
+	geom_smooth(colour = "#005A31") +
+	scale_y_continuous(label = comma) +
+	scale_x_continuous(label = comma) +
+	ylab("Averange Number of Characters in a Sentence") + xlab("Punctuation Per Character") +
+	ggtitle("Comparing how the Average Number of Characters in a Sentence Changes with the Rate of Punctuation") +
+	theme_bw() +
+	theme(text = element_text(family = "Calibri", colour = "grey30"), 
+		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+		panel.grid = element_blank(),
+		panel.border = element_blank(),
+		axis.text.y = element_text(size = rel(1)),
+		axis.text.x = element_text(size = rel(1)))
+
+ggplot(data = slm_df1, aes(x = punctPerCharSpeech, y= avgTTRatio)) +
+	geom_point(colour = "#A8CD1B", size = 2) +
+	geom_smooth(colour = "#005A31") +
+	scale_y_continuous(label = percent) +
+	scale_x_continuous(label = comma) +
+	ylab("Percentage of Unique Words in a Sentence") + xlab("Punctuation Per Character") +
+	ggtitle("Percentage of Unique Words per Sentence decreases with an increase in Punctuation Rate") +
+	theme_bw() +
+	theme(text = element_text(family = "Calibri", colour = "grey30"), 
+		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+		panel.grid = element_blank(),
+		panel.border = element_blank(),
+		axis.text.y = element_text(size = rel(1)),
+		axis.text.x = element_text(size = rel(1)))
+
+g11 <- 
+ggplot(data = slm_df1, aes(x = avgWordsSentence, y= avgTTRatio)) +
+	geom_point(colour = "#A8CD1B", size = 2) +
+	geom_smooth(colour = "#005A31") +
+	scale_y_continuous(label = percent) +
+	scale_x_continuous(label = comma) +
+	ylab("Percentage of Unique Words in a Sentence") + xlab("Average Number of Words in a Sentence") +
+	ggtitle("Percentage of Unique Words per Sentence decreases with an increase in Average No. of Words in a Sentence") +
+	theme_bw() +
+	theme(text = element_text(family = "Calibri", colour = "grey30"), 
+		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+		panel.grid = element_blank(),
+		panel.border = element_blank(),
+		axis.text.y = element_text(size = rel(1.4)),
+		axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g11.png", sep = "/"), plot = g11, height = 8, width = 15, units='in', dpi=400)
+
+g12 <- 
+ggplot(data = slm_df1, aes(x = avgLengthWordSpeech, y= avgTTRatio)) +
+	geom_point(colour = "#A8CD1B", size = 2) +
+	geom_smooth(colour = "#005A31") +
+	scale_y_continuous(label = percent) +
+	scale_x_continuous(label = comma) +
+	ylab("Percentage of Unique Words in a Sentence") + xlab("Average Length of Words in a Speech") +
+	ggtitle("Percentage of Unique Words per Sentence against Average Length of Words in a Speech") +
+	theme_bw() +
+	theme(text = element_text(family = "Calibri", colour = "grey30"), 
+		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+		panel.grid = element_blank(),
+		panel.border = element_blank(),
+		axis.text.y = element_text(size = rel(1.4)),
+		axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_ba_g12.png", sep = "/"), plot = g12, height = 8, width = 15, units='in', dpi=400)
+
+
+
+
+####### Visualising the first data set
+
+cmd_df1 <- 
+	slm_df1 %>%
+		select(avgWordsSentence, avgCharSentence, avgCommaSentence, avgSColonSentence, avgTTRatio) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist(method = "euclidean") %>%
+		cmdscale(eig = TRUE) %>%
+		autoplot
+
+pca_1 <- 
+	slm_df1 %>%
+		select(-name) %>%
+		mutate(speechYear = year(dateOfSpeech)) %>%
+		data.frame %>%
+		select(-dateOfSpeech) %>%
+		PCA(, scale.unit = TRUE, ncp = 10, quali.sup = 8)
+
+plot(pca1, choix = "ind", col.quali = "#005A31", col.ind = "#A8CD1B", col.var = "black")
+
+	
+sm_df2 <- slm_df1 %>%
+		select(-name, -dateOfSpeech) %>%
+		data.frame 
+
+pca_2 <- sm_df2 %>%
+		PCA(, scale.unit = TRUE, ncp = 20) 
+
+hcpc1 <- pca_2 %>%
+		HCPC
+
+
+
+### Stage 6: POS Tagging
+
+
+# Function to extract POS tags
+
+extractPOS <- function(speech){
+	speechString <- as.String(speech)
+	sent_token_annotator <- Maxent_Sent_Token_Annotator()
+	word_token_annotator <- Maxent_Word_Token_Annotator()
+	pos_tag_annotator <- Maxent_POS_Tag_Annotator()
+
+	annotatedSpeech <- annotate(speechString, list(sent_token_annotator, word_token_annotator))
+	posAnnotatedSpeech <- annotate(speechString, pos_tag_annotator, annotatedSpeech)
+
+	posTags <- posAnnotatedSpeech$features %>%
+				map("POS") %>%
+				unlist %>%
+				paste(collapse = " ")
+	return(posTags)
+}
+
+
+
+# Applying our function to PM's speeches - this takes approx. 15 minutes on my laptop
+
+speechPosTags <- speechListCleanEn %>%
+			map(~ extractPOS(speech = .x))
+
+speechPosTagsClean <- speechPosTags %>%
+				map(~ gsub("[[:punct:]]+", "", .x)) %>%
+				map(~ gsub("^\\s+|\\s+$", "", .x)) %>%
+				map(~ gsub("\\s+", " ", .x))
+
+#saveRDS(speechPosTagsClean, "speechPosTags.RDS")
+speechPosTagsClean <- readRDS("speechPosTags.RDS")
+
+
+
+########## POS unigrams
+
+topPos <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags) %>%
+		group_by(pos) %>%
+		summarise(posFreq = n()) %>%
+		arrange(-posFreq) %>%
+		head(15) %>%
+		select(pos) %>%
+		unlist %>%
+		unname
+
+posToUse <- data.frame(pos = topPos, stringsAsFactors = FALSE)
+
+
+cmd1 <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags) %>%
+		inner_join(posToUse) %>%
+		group_by(name, pos) %>%
+		summarise(posFreq = n()) %>%
+		arrange(-posFreq) %>%
+		ungroup %>%
+		spread(pos, posFreq, fill = 0) %>%
+		select(-name) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine() %>%
+		cmdscale(eig = TRUE) %>%
+		autoplot(colour = "#005A31", size = 3) + 
+			ggtitle("Multi-Dimensional Scaling with Cosine Delta on Top 15 POS Tags") +
+			theme_minimal() +
+			theme(text = element_text(family = "Calibri", colour = "grey30"), 
+				plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+				panel.grid = element_blank(),
+				panel.border = element_blank(),
+				axis.text.y = element_text(size = rel(1.4)),
+				axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_posMds_g1.png", sep = "/"), plot = cmd1, height = 8, width = 15, units='in', dpi=400)
+
+
+
+
+t1 <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags) %>%
+		inner_join(posToUse) %>%
+		group_by(name, pos) %>%
+		summarise(posFreq = n()) %>%
+		arrange(-posFreq) %>%
+		ungroup %>%
+		spread(pos, posFreq, fill = 0) %>%
+		select(-name) %>%
+		PCA
+
+
+
+
+######### POS Bigrams
+
+
+topPosFreq <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags, token = "ngrams", n = 2) %>%
+		group_by(pos) %>%
+		summarise(posFreq = n()) %>%
+		arrange(-posFreq) %>%
+		head(50) %>%
+		select(pos) %>%
+		unlist %>%
+		unname
+
+topPosDoc <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags, token = "ngrams", n = 2) %>%
+		group_by(pos) %>%
+		summarise(appearInDocs = length(unique(name))) %>%
+		arrange(-appearInDocs) %>%
+		filter(appearInDocs/max(appearInDocs) >= .5) %>% 
+		select(pos) %>%
+		unlist %>%
+		unname %>%
+		head(90)
+
+posToUse <- data.frame(pos = base::union(topPosFreq, topPosDoc), stringsAsFactors = FALSE)
+
+
+posBgDf <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags, token = "ngrams", n = 2) %>%
+		inner_join(posToUse) %>%
+		group_by(name, pos) %>%
+		summarise(posFreq = n()) %>%
+		arrange(-posFreq) %>%
+		ungroup %>%
+		spread(pos, posFreq, fill = 0) 
+
+
+cmd2 <- posBgDf %>%
+		select(-name) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine() %>%
+		cmdscale(eig = TRUE) %>%
+		autoplot(colour = "#005A31", size = 3) + 
+			ggtitle("Multi-Dimensional Scaling with Cosine Delta on Top 90 POS Bigram Tags") +
+			theme_minimal() +
+			theme(text = element_text(family = "Calibri", colour = "grey30"), 
+				plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+				panel.grid = element_blank(),
+				panel.border = element_blank(),
+				axis.text.y = element_text(size = rel(1.4)),
+				axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_posMds_g2.png", sep = "/"), plot = cmd2, height = 8, width = 15, units='in', dpi=400)
+
+
+
+
+
+######### POS Bigrams Consensus Network
+
+
+topPosFreq <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags, token = "ngrams", n = 2) %>%
+		group_by(pos) %>%
+		summarise(posFreq = n()) %>%
+		arrange(-posFreq) %>%
+		head(50) %>%
+		select(pos) %>%
+		unlist %>%
+		unname
+
+topPosDoc <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags, token = "ngrams", n = 2) %>%
+		group_by(pos) %>%
+		summarise(appearInDocs = length(unique(name))) %>%
+		arrange(-appearInDocs) %>%
+		filter(appearInDocs/max(appearInDocs) >= .5) %>% 
+		select(pos) %>%
+		unlist %>%
+		unname
+
+posToUse <- union(topPosFreq, topPosDoc)
+
+# I need 30 features for use in dissimilarity calculation for 1st batch, cumulatively summing up to 150 total features for the final batch
+featToUse <- 30
+noOfBatch <- length(posToUse)/featToUse
+splitAt <- as.list(cumsum(rep(featToUse, times = noOfBatch)))
+
+# Function to split our data set into batches
+splitDfBatch <- function(toIncludeLen, posTags, df){
+colsInd <- seq(from = 1, by = 1, to = toIncludeLen)
+colsToUse <- gsub("\\s+", "\\.", posTags[colsInd])
+dfBatch <- df[, names(df) %in% colsToUse]
+return(dfBatch)
+}
+
+
+posBgDf <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean))),
+			speechPosTags = unlist(speechPosTagsClean), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = pos, input = speechPosTags, token = "ngrams", n = 2) %>%
+		group_by(name, pos) %>%
+		summarise(posFreq = n()) %>%
+		ungroup %>%
+		spread(pos, posFreq, fill = 0) %>%
+		data.frame
+row.names(posBgDf) <- posBgDf$name
+
+
+
+posBgDfBatches <- 
+		map(.x = splitAt, .f = splitDfBatch, posTags = posToUse, df = posBgDf) %>%
+		map(.x = ., .f = as.matrix) %>%
+		map(.x = ., .f = scale, center = TRUE, scale = TRUE) %>%
+		map(.x = ., .f = dist.cosine) %>%
+		map(.x = ., .f = as.matrix) %>%
+		map(.x = ., .f = melt) %>%
+		map2(.x = ., .y = setNames(as.list(seq(from = 1, to = noOfBatch)), nm = rep("batch", times = noOfBatch)), .f = mutate) %>%
+		map(.f = function(x) filter(x, Var1 != Var2)) %>%
+		map(.f = function(x) group_by(.data = x, Var1)) %>%
+		map(.f = function(x) top_n(x, n = -5, wt = value)) %>%
+		rbindlist %>%
+		rename(doc1 = Var1, doc2 = Var2, distance = value, batch = `.y[[i]]`) %>%
+		arrange(doc1, batch, distance) %>%
+		ungroup %>%
+		setDT
+
+simDf <- posBgDfBatches[
+	][, presentInBatch := length(unique(batch)), by = .(doc1, doc2)
+	][presentInBatch >= 3
+	][, .(avgDistance = mean(distance)), by = .(doc1, doc2)
+	][, avgSimilarity := 1/avgDistance
+	][, .(doc1, doc2, avgSimilarity)]
+
+verticesDf <- data.frame(name = names(speechPosTagsClean), dateOfSpeech = as.character(ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechPosTagsClean)))),
+		stringsAsFactors = FALSE) %>%
+	mutate(speechCode = sprintf("%s - %d", "Speech", seq_along(name))) %>%
+	setDT
+
+set.seed(1234)
+g1 <- graph_from_data_frame(d = simDf, directed = FALSE, vertices = verticesDf)
+g1 <- simplify(g1, edge.attr.comb="sum")
+wtc <- cluster_walktrap(g1)
+modularity(wtc); modularity(g1, membership(wtc)) #0.455
+dfG1 <- data.frame(speeches = unclass(wtc)$names, groups = unclass(wtc)$membership, stringsAsFactors = FALSE)    #this gives membership of each speech
+dfG2 <- inner_join(dfG1, verticesDf, by = c("speeches" = "name"))
+posNDf <- ggnetwork(g1, layout="fruchtermanreingold", arrow.gap=0, cell.jitter=0) %>% setDT
+posNDf[, dateOfSpeechInt := as.integer(posNDf$dateOfSpeech)]
+
+
+gcn_pos1 <- 
+ggplot(data = posNDf) +
+	geom_edges(aes(x = x, y = y, xend = xend, yend = yend, alpha = avgSimilarity),
+		color = "grey50", curvature = 0.1, size = 1) +
+	geom_nodes(aes(x = x, y = y, xend = xend, yend = yend, colour = dateOfSpeechInt),
+        	size = 5) +
+	scale_color_distiller(palette = "Greens", direction = 1,
+				guide = guide_colourbar(ticks = FALSE, barwidth = 10, barheight = .4, title = "Recency of Speech",
+							title.position = "top", title.hjust = 1, title.vjust = 1, 
+							label.position = "top", direction = "horizontal", label = FALSE)) +
+	geom_text_repel(data = unique(posNDf[, .(x, y, speechCode)]), aes(x = x, y = y, label = speechCode), colour = "grey50") +
+	xlab("") + ylab("") +
+	ggtitle("Consensus Network of the Prime Minister's Speeches") +
+	theme(text = element_text(family = "Garamond"),
+		axis.line = element_blank(),
+    		axis.ticks = element_blank(),
+    		axis.text = element_blank(),
+    		panel.grid.major = element_blank(),
+    		panel.grid.minor = element_blank(),
+    		panel.border = element_blank(),
+    		panel.background = element_blank(),
+    		plot.background = element_rect(fill = "white"),
+    		legend.background = element_blank(),
+		legend.key = element_blank(),
+		legend.position = "top",
+    		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2), colour = "grey30")) +
+		guides(alpha = guide_legend(title = "Stylistic Similarity", title.position = "top", title.hjust = 1, title.vjust = 1,
+						ticks = FALSE, direction = "horizontal", label = FALSE, keywidth = 3.1, keyheight = 1))
+	
+
+ggplot_with_subtitle(gcn_pos1, 
+                     label = paste("Network developed using 5 batches with 30, 60, 90, 120, 150 MF POS bigrams.",
+				   "Darker edges represent stronger connections, whereas darker nodes represent recent speeches.", "", sep = "\n"),
+                     fontfamily = "Calibri",
+                     cex = 1.3, col = "black")
+
+ggsave(paste(basePath, "Graphs", "bcn_pos2a.png", sep = "/"), height = 8, width = 15, units='in', dpi = 400)
+
+
+
+
+
+
+
+
+
+
+
+######### Most Frequent Function Words Unigrams
+
+
+
+speechListClean <- speechList %>%
+			map(~ gsub("^\\s+|\\s+$", "", .x)) %>%						# Removing leading & trailing whitespace
+			map(~ gsub("\\t|\\r|\\n", " ", .x)) %>%						# Removing tab/return/newline spaces
+			map(~ gsub("Mr[.]*\\s*President", "", .x, ignore.case = TRUE)) %>%		# Removing unrequired addresses
+			map(~ gsub("Ladies and Gentlemen", "", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("Distinguished Guests*", "", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("Excellency|Excellencies", "", .x, ignore.case = TRUE)) %>%	
+			map(~ gsub("Quaid\\s*[eE]\\s*Azam", "quaideazam", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("Mr\\.", "Mr", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("I* Thank you", "", .x, ignore.case = TRUE)) %>%
+			map(~ gsub("\\.", " fullstop ", .x)) %>%					# Textualising a ., to later convert it back
+			map(~ gsub(",", " comma ", .x)) %>%						# Textualising a , to later convert it back
+			map(~ gsub(";", " semicolon ", .x)) %>%						# Textualising a ;
+			map(~ gsub(":", " colon ", .x)) %>%						# Textualising a :
+			map(~ gsub("[^[:alnum:]+]", " ", .x)) %>% 					# Remove characters apart from alpha-numeric
+			map(~ gsub("[[:digit:]]+", "", .x)) %>%						# Remove digits
+			map(~ gsub(pronounList, "", .x, ignore.case = TRUE)) %>%			# Should probably remove some/all pronouns
+			map(~ gsub(" fullstop ", " \\. ", .x)) %>%					# Adding the . back in
+			map(~ gsub(" comma ", " , ", .x)) %>%						# Adding the , back in
+			map(~ gsub(" semicolon ", " ; ", .x)) %>%					# Adding the ; back in
+			map(~ gsub(" colon ", " : ", .x)) %>%						# Adding the : back in
+			map(~ gsub("[.,;:]", " ", .x)) %>% 					# Now removing punct signs for enabling analyses
+			map(~ gsub("\\s+", " ", .x)) %>%						# Remove extra whitespace
+			map(~ gsub("^\\s+|\\s+$", "", .x)) %>%					# Removing leading & trailing whitespace again
+			map(~ tolower(.x))							# Making text lowercase
+
+names(speechListClean) <- allFilesName
+			
+speechLang <- speechListClean %>%
+			map(~ substr(.x, start = 1, stop = 300)) %>%			# Only using first 300 characters
+			map(~ textcat(.x)) %>%						# Identifying the language of each speech
+			map_chr(1)							# Extracting the first object from each item of list
+
+
+speechListCleanEn <- speechListClean[speechLang == "english"]
+
+notSpeeches <- c("20150106-21st Constitutional Amendment amendment in army act to prove vital in establishing peace harmony.txt", 
+		 "20150108-PMAddress to Pakistani community in Bahrain.txt")
+speechListCleanEn <- speechListCleanEn[!names(speechListCleanEn) %in% notSpeeches]
+
+
+
+
+
+# Following words were found by sorting words for
+	# 1. Number of times they appear in all speeches
+	# 2. Number of speeches in which they appear
+
+wordsToRemove <- data.frame(word = unique( c("mr", "pakistan", "s", "mws", "mw", "e", "th", "economic", "development", "peace", 
+			"security", "countries", "country", 
+			"energy", "asia", "one", "cooperation", "international", "afghanistan", "national", "region", "investment", "two", "growth",
+			"efforts", "terrorism", "sector", "years", "power", "trade", "foreign", "nuclear", "regional", "south", "global",
+			"education", "business", "year", "china", "policy", "opportunities", "process", "economy", "support", "time", "afghan", 
+			"infrastructure", "president", "project", "future", "prosperity", "relations", "united", "india", "political", "challenges",
+			"human", "resources", "state", "social", "peaceful", "stability", "nations", "gas", "potential", "vision", "major", "minister",
+			"prime", "progress", "strategic", "un", "women", "connectivity", "billion", "financial", "issues", "opportunity", 
+			"community", "million", "mutual", "private", "water", "mr", "mister", "training", "address", "building", "common",
+			"help", "promoting", "society", "past", "council", "dialogue", "youth", "build", "environment", "asian", "balochistan",
+			"baluchistan", "goals", "commitment", "public", "states", "agenda", "conference", "forces", "military", "promote", "visit",
+			"confident", "congratulate", "defence", "comprehensive", "ladies", "services", "special", "strengthen", "summit", "turkish",
+			"assembly", "companies", "general", "increased", "interest", "priority", "strategy", "action", "bilateral", "challenge", 
+			"corridor", "extremism", "friendly", "initiatives", "market", "modern", "natural", "navy", "stable", "success", "thank", 
+			"capital", "policies", "programme", "access", "areas", "assure", "create", "culture", "leadership", "maritime", 
+			"government", "world", "central", "technology", "welcome", "projects", "partnership", "history", "initiative", "relationship",
+			"sustainable", "democratic", "poverty", "population", "implementation", "ties", "objectives", "civil", "institutions",
+			"principles", "cultural", "collaboration", "friendship", "gdp", "historic", "priorities", "sectors", "socio", "partners",
+			"allah", "deficit", "decades", "facilities", "five", "health", "non", "inrerests", "pakistani", "resource", "vibrant", 
+			"capacity", "casa", "distinguished", "elected", "faith", "exchange", "launched", "market", "markets", "member", "members",
+			"port", "responsibility", "strengthened", "zindabad", "august", "collective", "completion", "democracy", "economies",
+			"governments", "integration", "islamabad", "karachi", "law", "promise", "regime", "system", "consensus", "standards", "dear", 
+			"gentlement", "ladies", "governance", "framework", "industrial", "industry", "oil", "paindabad", "information", "pipeline",
+			"reconciliation", "students", "tax", "tradition", "traditions", "transparent", "armed", "budget", "city", "conclusion", 
+			"domestic", "decision", "decisions", "institutional", "operation", "media", "menace", "investors", "internal", 
+			"terrorist", "terrorists", "west", "thousands", "staff", "turkmenistan", "turkey", "xi", "ventures", "transformation",
+			"technological", "technologies", "territorial", "strategies", "speech", "resolution", "reserves", "sovereignty",
+			"regions", "religious", "repatriation", "refugees", "performance", "partner", "pak", "iran", "indicators", "indicator", "gwadar",
+			"globalization", "hosting", "geographical", "europe", "dollars", "discrimination", "disarmement", "deterrence",
+			"commerce", "brother", "brothers", "sisters", "sister", "boundaries", "association", "attacks", "soldiers", 
+			"violence", "scourge", "solidatory", "threats", "pakistanis", "neighbourhood", "fiscal", "fact", "tajikistan",
+			"peacekeeping", "young", "army", "kashmir", "chinese", "investments", "gentlemen", "islamic", "friends",
+			"percent", "people", "peoples", "provincial", "play", "saarc", "government", "development", "people",
+			"am", "nation", "today", "important", "new", "between", "will", "both", "continue", "forward", "role", "wish", "including",
+			"come", "strong", "towards")), stringsAsFactors = FALSE)
+
+# mw appears in mega watts, s is a leftover once apostraphes are removed, th is a left once numbers are removed
+# e appears in quaid e azam
+# e, th, s, mw, 
+# s, e = 20130814-Prime Minister Muhammad Nawaz Sharifs address on Independence Day of Pakistan.txt
+# mw = 20130918-Prime Minister Muhammad Nawaz Sharifs speech for the business forum.txt
+# th = 20130921-PMs youth policy address 21st September 2013.txt
+
+
+
+topWordsFreq <- data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		anti_join(wordsToRemove) %>%
+		group_by(word) %>%
+		summarise(wordFreq = n()) %>%
+		arrange(-wordFreq) %>%
+		head(20) %>%
+		select(word) %>%
+		unlist %>%
+		unname
+
+topWordsSpeech <- data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+				unnest_tokens(output = word, input = speech) %>%
+				anti_join(wordsToRemove) %>%
+				group_by(word) %>%
+				summarise(wordPresentInSpeeches = length(unique(name))) %>%
+				arrange(-wordPresentInSpeeches) %>%
+				filter(wordPresentInSpeeches/max(wordPresentInSpeeches) >= .5) %>% 
+				select(word) %>%
+				unlist %>%
+				unname
+
+wordsToUse <- data.frame(word = union(topWordsFreq, topWordsSpeech), stringsAsFactors = FALSE)
+
+
+stylDf <- data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		inner_join(wordsToUse) %>%
+		group_by(name, dateOfSpeech, word) %>%
+		summarise(totalCounts = n()) %>%
+		ungroup %>%
+		spread(word, totalCounts, fill = 0) %>%
+		data.frame
+
+row.names(stylDf) <- 1:nrow(stylDf)
+
+cmd_df1 <- stylDf %>%
+		select(-name, -dateOfSpeech) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine() %>%
+		cmdscale(eig = TRUE) %>%
+		autoplot(colour = "#005A31", size = 3) + 
+			ggtitle("Multi-Dimensional Scaling with Cosine Delta on Top 53 Most Frequent Words Unigrams") +
+			theme_minimal() +
+			theme(text = element_text(family = "Calibri", colour = "grey30"), 
+				plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+				panel.grid = element_blank(),
+				panel.border = element_blank(),
+				axis.text.y = element_text(size = rel(1.4)),
+				axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_mfwMds_g1.png", sep = "/"), plot = cmd_df1, height = 8, width = 15, units='in', dpi=400)
+
+
+
+hmap1 <- 
+	stylDf %>% 
+	    select(-name, -dateOfSpeech) %>%
+	    as.matrix %>%
+	    scale(center = TRUE, scale = TRUE) %>%
+	    heatmap.2(., distfun = dist.cosine, scale = "none", trace = "none", 
+        		main = "Heatmap of PM's Speeches using 53 Most Frequent Word Unigrams", col = magma(n = 100), dendrogram = "row", 
+			denscol = "steelblue")
+
+datMat <- stylDf %>% 
+		select(-name, -dateOfSpeech) %>%
+		as.matrix 
+
+row.names(datMat) <- stylDf$name
+
+distMat <- datMat %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine %>% 
+		sqrt 
+
+pam1 <- clusterboot(data = distMat, B = 500, bootmethod = "boot", clustermethod = pamkCBI, seed = 14551, count = FALSE)
+
+dfG2 <- data.frame(speeches = attr(pam1$result$result$pamobject$clustering, which = "names"),
+		   groups = pam1$result$result$pamobject$clustering, stringsAsFactors = FALSE)
+
+
+
+
+
+##### Word bigrams
+
+wordsToRemove <- data.frame(word = unique(c("of pakistan", "in pakistan", "the world", "pakistan s", "the people", "peace and",
+			"the government", "pakistan is", "peace and", "the government", "pakistan is", "pakistan and", 
+			"people of", "the country", "like to", "the region", "two countries", "prime minister", "continue to",
+			"pakistan has", "the united", "south asia", "the international", "would like", "economic development",
+			"government is", "and economic", "and security", "and prosperity", "development of", "in afghanistan",
+			"wish to", "economic growth", "that pakistan", "the past", "opportunity to", "number of", "committed to",
+			"united nations", "central asia", "development and", "the first", "confident that", "efforts to",
+			"private sector", "the nation", "the two", "and stability", "the entire", "the global", "the national",
+			"the un", "a peaceful", "government has", "pakistan in", "pakistan will", "role in", "to promote",
+			"and development", "based on", "cooperation in", "nuclear security", "the energy", "to address",
+			"economic and", "of peace", "to pakistan", "a strong", "commitment to", "forward to", "government of", 
+			"international community", "relations with", "stability in", "am confident", "of terrorism",
+			"pakistan navy", "security and", "the security", "will continue", "economic corridor", 
+			"for all", "for pakistan", "government and", "growth and", "opportunities for",
+			"socio economic", "the afghan", "and pakistan", "and social", "implementation of",
+			"ladies and", "of government", "trade and", "a comprehensive", "a number", 
+			"believe that", "in south", "pakistan the", "the last", "this opportunity", "am sure", "for peace",
+			"security council", "terrorism and", "the economy", "the pakistan", "the right", "to provide", "between pakistan",
+			"government to", "in fact", "region and", "the new", "will be", "has been")), stringsAsFactors = FALSE)
+
+
+topWordsFreq <- data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech, token= "ngrams", n = 2) %>%
+		anti_join(wordsToRemove) %>%
+		group_by(word) %>%
+		summarise(wordFreq = n()) %>%
+		arrange(-wordFreq) %>%
+		head(30) %>%
+		select(word) %>%
+		unlist %>%
+		unname
+
+topWordsSpeech <- data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+				unnest_tokens(output = word, input = speech, token = "ngrams", n = 2) %>%
+				anti_join(wordsToRemove) %>%
+				group_by(word) %>%
+				summarise(wordPresentInSpeeches = length(unique(name))) %>%
+				arrange(-wordPresentInSpeeches) %>%
+				filter(wordPresentInSpeeches/max(wordPresentInSpeeches) >= .4) %>% 
+				select(word) %>%
+				unlist %>%
+				unname
+
+wordsToUse <- data.frame(word = union(topWordsFreq, topWordsSpeech), stringsAsFactors = FALSE)
+
+
+
+stylDf <- data.frame(name = names(speechListCleanEn), dateOfSpeech = ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn))),
+			speech = unlist(speechListCleanEn), 
+			stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech, token = "ngrams", n = 2) %>%
+		inner_join(wordsToUse) %>%
+		group_by(name, dateOfSpeech, word) %>%
+		summarise(totalCounts = n()) %>%
+		ungroup %>%
+		spread(word, totalCounts, fill = 0) %>%
+		data.frame
+
+row.names(stylDf) <- 1:nrow(stylDf)
+
+
+
+cmd_df1 <- stylDf %>%
+		select(-name, -dateOfSpeech) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine() %>%
+		cmdscale(eig = TRUE) %>%
+		autoplot(colour = "#005A31", size = 3) + 
+		ggtitle("Multi-Dimensional Scaling with Cosine Delta on Top 33 Most Frequent Words Bigrams") +
+		theme_minimal() +
+		theme(text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1.4)),
+			axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_mfwMds_g2.png", sep = "/"), plot = cmd_df1, height = 8, width = 15, units='in', dpi=400)
+
+
+
+hmap2 <- stylDf %>% 
+		select(-name, -dateOfSpeech) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		heatmap.2(., distfun = dist.cosine, scale = "none", trace = "none", 
+				main = "Heatmap of PM's Speeches using\n33 Most Frequent Word Bigrams", col = magma(n = 100), dendrogram = "row", 
+			denscol = "steelblue")
+
+
+
+datMat <- stylDf %>% 
+		select(-name, -dateOfSpeech) %>%
+		as.matrix 
+
+row.names(datMat) <- stylDf$name
+
+distMat <- datMat %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine %>% 
+		sqrt 
+
+pam1 <- clusterboot(data = distMat, B = 500, bootmethod = "boot", clustermethod = pamkCBI, seed = 14551, count = FALSE)
+
+dfG2 <- data.frame(speeches = attr(pam1$result$result$pamobject$clustering, which = "names"),
+		   groups = pam1$result$result$pamobject$clustering, stringsAsFactors = FALSE)
+
+
+
+
+
+
+
+###### Characters 4 grams
+
+stylDfRaw <- speechListCleanEn %>% 
+		map(~ quanteda::tokenize(x = .x, removePunct = TRUE, simplify = TRUE, what = "character")) %>%
+		map(~ ngrams(x = ., n = 4, concatenator = "")) %>%
+		map(~ table(.x)) %>%
+		map(~ as.data.frame(.x)) %>%
+		map2(.x = ., .y = as.list(names(speechListCleanEn)), .f = mutate) %>%
+		rbindlist %>%
+		rename(name = `.y[[i]]`, fourGramChar = `.x`, totalCounts = Freq)
+
+topCharsFreq <- stylDfRaw %>%
+		group_by(fourGramChar) %>% 
+		summarise(wordFreq = sum(totalCounts)) %>%
+		arrange(-wordFreq) %>%
+		head(40) %>%
+		select(fourGramChar) %>%
+		unlist %>%
+		unname
+
+topCharsDoc <- stylDfRaw %>%
+		group_by(fourGramChar) %>% 
+		summarise(charPresentInSpeeches = n()) %>%
+		arrange(-charPresentInSpeeches) %>%
+		filter(charPresentInSpeeches/max(charPresentInSpeeches) >= .5) %>% 
+		select(fourGramChar) %>%
+		unlist %>%
+		unname
+
+
+charsToUse <- data.frame(fourGramChar = union(topCharsFreq, topCharsDoc), stringsAsFactors = FALSE)
+
+
+
+stylDf <- stylDfRaw %>%
+		inner_join(charsToUse) %>%
+		group_by(name, fourGramChar) %>%
+		summarise(totalCounts = sum(totalCounts)) %>%
+		ungroup %>%
+		spread(fourGramChar, totalCounts, fill = 0) %>%
+		data.frame
+
+row.names(stylDf) <- unique(stylDf$name)
+
+
+
+cmd_df1 <- stylDf %>%
+		select(-name) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine() %>%
+		cmdscale(eig = TRUE) %>%
+		autoplot(colour = "#005A31", size = 3) + 
+		ggtitle("Multi-Dimensional Scaling with Cosine Delta on Top 1,080 Most Frequent Character 4-grams") +
+		theme_minimal() +
+		theme(text = element_text(family = "Calibri", colour = "grey30"), 
+			plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2)),
+			panel.grid = element_blank(),
+			panel.border = element_blank(),
+			axis.text.y = element_text(size = rel(1.4)),
+			axis.text.x = element_text(size = rel(1.4)))
+
+ggsave(paste(basePath, "Graphs", "nss_mfcMds_g1.png", sep = "/"), plot = cmd_df1, height = 8, width = 15, units='in', dpi=400)
+
+
+
+
+##### Character 4grams Consensus Network
+
+
+
+# I need 100 features for use in dissimilarity calculation for 1st batch, cumulatively summing up to 1,080 total features for the final batch
+featToUse <- 90
+noOfBatch <- nrow(charsToUse)/featToUse
+splitAt <- as.list(cumsum(rep(featToUse, times = noOfBatch)))
+
+# Function to split our data set into batches
+splitDfBatch <- function(toIncludeLen, chars, df){
+colsInd <- seq(from = 1, by = 1, to = toIncludeLen)
+colsToUse <- gsub("\\s+", "\\.", chars[colsInd])
+dfBatch <- df[, names(df) %in% colsToUse]
+return(dfBatch)
+}
+
+
+
+posBgDfBatches <- 
+		map(.x = splitAt, .f = splitDfBatch, chars = unlist(charsToUse), df = stylDf) %>%
+		map(.x = ., .f = as.matrix) %>%
+		map(.x = ., .f = scale, center = TRUE, scale = TRUE) %>%
+		map(.x = ., .f = dist.cosine) %>%
+		map(.x = ., .f = as.matrix) %>%
+		map(.x = ., .f = melt) %>%
+		map2(.x = ., .y = setNames(as.list(seq(from = 1, to = noOfBatch)), nm = rep("batch", times = noOfBatch)), .f = mutate) %>%
+		map(.f = function(x) filter(x, Var1 != Var2)) %>%
+		map(.f = function(x) group_by(.data = x, Var1)) %>%
+		map(.f = function(x) top_n(x, n = -5, wt = value)) %>%
+		rbindlist %>%
+		rename(doc1 = Var1, doc2 = Var2, distance = value, batch = `.y[[i]]`) %>%
+		arrange(doc1, batch, distance) %>%
+		ungroup %>%
+		setDT
+
+simDf <- posBgDfBatches[
+	][, presentInBatch := length(unique(batch)), by = .(doc1, doc2)
+	][presentInBatch >= 3
+	][, .(avgDistance = mean(distance)), by = .(doc1, doc2)
+	][, avgSimilarity := 1/avgDistance
+	][, .(doc1, doc2, avgSimilarity)]
+
+verticesDf <- data.frame(name = names(speechListCleanEn), dateOfSpeech = as.character(ymd(gsub("^([[:digit:]]+)-.+$", "\\1", names(speechListCleanEn)))),
+		stringsAsFactors = FALSE) %>%
+	mutate(speechCode = sprintf("%s - %d", "Speech", seq_along(name))) %>%
+	setDT
+
+set.seed(1234)
+g1 <- graph_from_data_frame(d = simDf, directed = FALSE, vertices = verticesDf)
+g1 <- simplify(g1, edge.attr.comb = "sum")
+wtc <- cluster_walktrap(g1)
+modularity(wtc); modularity(g1, membership(wtc))
+dfG1 <- data.frame(speeches = unclass(wtc)$names, groups = unclass(wtc)$membership, stringsAsFactors = FALSE)    #this gives membership of each speech
+dfG2 <- inner_join(dfG1, verticesDf, by = c("speeches" = "name"))
+posNDf <- ggnetwork(g1, layout="fruchtermanreingold", arrow.gap=0, cell.jitter=0) %>% setDT
+posNDf[, dateOfSpeechInt := as.integer(posNDf$dateOfSpeech)]
+
+
+gcn_4c1 <- 
+ggplot(data = posNDf) +
+	geom_edges(aes(x = x, y = y, xend = xend, yend = yend, alpha = avgSimilarity),
+		color = "grey50", curvature = 0.1, size = 1) +
+	geom_nodes(aes(x = x, y = y, xend = xend, yend = yend, colour = dateOfSpeechInt),
+        	size = 5) +
+	scale_color_distiller(palette = "Greens", direction = 1,
+				guide = guide_colourbar(ticks = FALSE, barwidth = 10, barheight = .4, title = "Recency of Speech",
+							title.position = "top", title.hjust = 1, title.vjust = 1, 
+							label.position = "top", direction = "horizontal", label = FALSE)) +
+	geom_text_repel(data = unique(posNDf[, .(x, y, speechCode)]), aes(x = x, y = y, label = speechCode), colour = "grey50") +
+	xlab("") + ylab("") +
+	ggtitle("Consensus Network of the Prime Minister's Speeches using Character 4-grams") +
+	theme(text = element_text(family = "Garamond"),
+		axis.line = element_blank(),
+    		axis.ticks = element_blank(),
+    		axis.text = element_blank(),
+    		panel.grid.major = element_blank(),
+    		panel.grid.minor = element_blank(),
+    		panel.border = element_blank(),
+    		panel.background = element_blank(),
+    		plot.background = element_rect(fill = "white"),
+    		legend.background = element_blank(),
+		legend.key = element_blank(),
+		legend.position = "top",
+    		plot.title = element_text(hjust = 0, family = "Garamond", size = rel(2), colour = "grey30")) +
+		guides(alpha = guide_legend(title = "Stylistic Similarity", title.position = "top", title.hjust = 1, title.vjust = 1,
+						ticks = FALSE, direction = "horizontal", label = FALSE, keywidth = 3.1, keyheight = 1))
+	
+
+
+ggsave(paste(basePath, "Graphs", "bcn_char4g_2.png", sep = "/"), height = 8, width = 15, units='in', dpi = 400)
+
+
+ 
+
+
+
+
+
+
+
+
+
+##### Combining all
+
+all_df1 <- inner_join(stylDf, selm_df1) %>%
+		select(-name, -dateOfSpeech) %>%
+		as.matrix %>%
+		scale(center = TRUE, scale = TRUE) %>%
+		dist.cosine() %>%
+		cmdscale %>%
+		data.frame
+
+cmd_df1$name <- 1:nrow(cmd_df1)
+
+ggplot(data = cmd_df1, aes(x = X1, y = X2)) + 
+geom_text(aes(label = name))
+
+
+
+
+
+cmd_df1 <- stylDf %>%
+		select(-name, -dateOfSpeech) %>%
+		mutate_each(funs((. - min(.))/(max(.) - min(.)))) %>%
+		as.matrix %>%
+		dist.cosine %>%
+		cmdscale %>%
+		data.frame
+
+cmd_df1$name <- 1:nrow(cmd_df1)
+
+ggplot(data = cmd_df1, aes(x = X1, y = X2)) + 
+geom_text(aes(label = name))
+
+
+pca1 <- stylDf %>%
+		select(-name, -dateOfSpeech) %>% PCA(ncp = 10)
+
+
+
+
+
+
+# Speech Level Measures
+	# 1. Type-Token Ratio (Herdan's C)
+
+# Character n-grams for most frequent ones
+# Word n-grams for most frequent ones
+
+
+# Test these separately, combined, do voting to find clusters
+# Maybe after clusters are formed, apply arules on most frequent words to find any differences, or form a writeprint by combining
+# different features (all you mentioned above + mfw) and then use arules to find associations, as per this paper:http://www.sciencedirect.com/science/article/pii/S1742287615000572
+# commas are not very indicative since they appear in numbers too
+
+
+
+
+
+
+# enron authorship attribution = is success due to ngrams? yes:  https://www.uvic.ca/engineering/ece/isot/assets/docs/Authorship_Verification_for_Short_Messages_using_Stylometry.pdf
+character ngram (4) and word ngrams (2, 3)
+
+http://www.aicbt.com/authorship-attribution/
+
+also read 5 (Authorship similarity detection from email messages), 16 (Authorship verification as a one-class classification problem)
+
+2, 4,  3,5,6,7   8     Chaski 2001
+
+
+# authorship attrubtion clustering
+# try clustering algos for DNAs
+# try tsne, mds, arules, pam
+# feature engineerning: 
+	#stylistic: POS tagging, length of sentences, avg length of words, richness of vocabulary, word n-grams, lexical diversity (unique no. of words),
+		lexical density (Number of different words / Total number of words) x 100, comma in speech, comma per sentence
+		also, do not take less common words
+		The Fog Index is a readability test designed to show how easy or difficult a text is to read. It uses the following formula:
+Reading Level (Grade) = (Average No. of words in sentences + Percentage of words of three or more syllables) x 0.4
+
+	# simply using function words may not suffice, since our documents are not long enough
+
+
+
+
+
+
+
+
+
+######## Humans acquire habits in their usage of language, which are exhibited in speeches, etc. Such stylistic and vocabulary patterns combine to form a fingerprint
+lexical density has also been graphed in your charts... most have > 40% but mostly less than 50%
+
+
+#		scale_fill_manual(values = c("#98dbc6", "#e6d72a"))
+#		scale_fill_manual(values = c("#f4cc70", "#20948b"))
+#		scale_fill_manual(values = c("#5d535e", "#ec96a4"))
+#		scale_fill_manual(values = c("#063852", "#e6df44"))
+#		scale_fill_manual(values = c("#500805", "#bc6d4f"))
+
+
+
+### Stage 4: Identify words that are specific to each speech in order to remove them --- we need stylistic patterns
+
+specWords <- data.frame(name = names(speechListCleanEn), speechNumber = 1:length(speechListCleanEn),
+			speech = unlist(speechListCleanEn), stringsAsFactors = FALSE) %>%
+		unnest_tokens(output = word, input = speech) %>%
+		group_by(word, name) %>%
+		summarise(countWithinSpeech = n()) %>%
+		ungroup %>%
+		group_by(word) %>%
+		summarise(foundInSpeeches = length(unique(name)),
+			  overallCount = sum(countWithinSpeech))
+
+
+
+speechListCleanEn %>%
+			#unlist %>%
+			data.frame(speech = unlist(.), stringsAsFactors = FALSE) %>% 
+			nrow
+			
+
+
